@@ -401,6 +401,117 @@ sudo chown webadmin:webgroup /var/log/carss-backup.log
 sudo systemctl status cron --no-pager | head
 sudo cat /var/log/carss-backup.log
 
+
+
+
+после исправлений
+
+artsiom@ubundu26:/opt/carss$ cat backup_carss.sh 
+#!/usr/bin/env bash
+set -euo pipefail
+
+DB_NAME="autos"
+DB_USER="carss_user"
+BACKUP_DIR="/var/backups/carss"
+RETENTION_DAYS=7
+DATE=$(date +%Y-%m-%d_%H-%M-%S)
+BACKUP_FILE="$BACKUP_DIR/${DB_NAME}_$DATE.sql.gz"
+
+mkdir -p "$BACKUP_DIR"
+
+echo "Starting backup for the database: $DB_NAME..."
+pg_dump -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" --no-owner --no-privileges \
+    | gzip > "$BACKUP_FILE"
+
+if [ ! -s "$BACKUP_FILE" ]; then
+    echo "Error: backup file is empty: $BACKUP_FILE" >&2
+    exit 1
+fi
+
+gzip -t "$BACKUP_FILE"
+
+find "$BACKUP_DIR" -name "${DB_NAME}_*.sql.gz" -mtime +"$RETENTION_DAYS" -delete
+
+echo "Backup successfully created: $BACKUP_FILE"
+echo "Backup process finished."
+
+
+=========================
+# 1) home для webadmin (если отсутствует)
+getent passwd webadmin
+sudo mkdir -p /home/webadmin
+sudo chown webadmin:webgroup /home/webadmin
+sudo chmod 750 /home/webadmin
+
+# 2) .pgpass с * вместо localhost (в скрипте host = 127.0.0.1)
+sudo -u webadmin tee /home/webadmin/.pgpass >/dev/null <<'EOF'
+*:5432:autos:carss_user:StrongPassw0rd!
+EOF
+sudo chown webadmin:webgroup /home/webadmin/.pgpass
+sudo chmod 600 /home/webadmin/.pgpass
+
+# 3) каталог для бэкапов
+sudo mkdir -p /var/backups/carss
+sudo chown webadmin:webgroup /var/backups/carss
+sudo chmod 750 /var/backups/carss
+
+# 4) скрипт бэкапа рядом с приложением
+sudo tee /opt/carss/backup_carss.sh >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+DB_NAME="autos"
+DB_USER="carss_user"
+BACKUP_DIR="/var/backups/carss"
+RETENTION_DAYS=7
+DATE=$(date +%Y-%m-%d_%H-%M-%S)
+BACKUP_FILE="$BACKUP_DIR/${DB_NAME}_$DATE.sql.gz"
+
+mkdir -p "$BACKUP_DIR"
+
+echo "Starting backup for the database: $DB_NAME..."
+pg_dump -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" --no-owner --no-privileges \
+    | gzip > "$BACKUP_FILE"
+
+if [ ! -s "$BACKUP_FILE" ]; then
+    echo "Error: backup file is empty: $BACKUP_FILE" >&2
+    exit 1
+fi
+
+gzip -t "$BACKUP_FILE"
+
+find "$BACKUP_DIR" -name "${DB_NAME}_*.sql.gz" -mtime +"$RETENTION_DAYS" -delete
+
+echo "Backup successfully created: $BACKUP_FILE"
+echo "Backup process finished."
+EOF
+sudo chown webadmin:webgroup /opt/carss/backup_carss.sh
+sudo chmod 750 /opt/carss/backup_carss.sh
+
+# 5) проверка pg_dump без пароля
+sudo -u webadmin pg_dump -h 127.0.0.1 -U carss_user -d autos --no-owner --no-privileges | head -5
+
+# 6) первый запуск
+sudo -u webadmin /opt/carss/backup_carss.sh
+ls -lh /var/backups/carss/
+
+# 7) cron на ежедневный запуск в 02:00
+sudo tee /etc/cron.d/carss-backup >/dev/null <<'EOF'
+0 2 * * * webadmin /opt/carss/backup_carss.sh >> /var/log/carss-backup.log 2>&1
+EOF
+sudo touch /var/log/carss-backup.log
+sudo chown webadmin:webgroup /var/log/carss-backup.log
+
+# 8) проверка cron
+sudo systemctl status cron --no-pager | head
+sudo cat /var/log/carss-backup.log
+==================================
+sudo -u postgres createdb autos_restore_test
+gunzip -c /var/backups/carss/autos_*.sql.gz | sudo -u postgres psql -d autos_restore_test
+sudo -u postgres psql -d autos_restore_test -c "SELECT * FROM car_models;"
+sudo -u postgres dropdb autos_restore_testа
+
+
 ---
 
 ## Часть 6. Финальная проверка
